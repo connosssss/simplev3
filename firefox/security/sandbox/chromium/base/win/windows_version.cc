@@ -28,8 +28,9 @@
 #endif
 
 #if !defined(NTDDI_WIN11_GE)
-#error Windows 10.0.26100.0 SDK or higher required.
+#define NTDDI_WIN11_GE 0x0A00000E
 #endif
+
 
 namespace base {
 namespace win {

@@ -7,9 +7,40 @@
 
 // clang-format off
 #include <windows.h>
+#include <dcommon.h>
+#include <dcomp.h>
 #include <dxgicommon.h>
 #include <dxgiformat.h>
 // clang-format on
+
+#ifndef NTDDI_WIN11_GE
+#define NTDDI_WIN11_GE 0x0A00000E
+#endif
+
+#if !defined(__IDCompositionDynamicTexture_INTERFACE_DEFINED__)
+#define __IDCompositionDynamicTexture_INTERFACE_DEFINED__
+#undef INTERFACE
+#define INTERFACE IDCompositionDynamicTexture
+DECLARE_INTERFACE_IID_(IDCompositionDynamicTexture, IUnknown, "A1DE1D3F-6405-447F-8E95-1383A34B0277")
+{
+    STDMETHOD(SetTexture)(THIS_
+        _In_ IDCompositionTexture* pTexture) PURE;
+
+    STDMETHOD(SetTexture)(THIS_
+        _In_ IDCompositionTexture* pTexture,
+        _In_count_(rectCount) const D2D_RECT_L *pRects,
+        _In_ size_t rectCount) PURE;
+};
+
+#undef INTERFACE
+#define INTERFACE IDCompositionDevice5
+DECLARE_INTERFACE_IID_(IDCompositionDevice5, IDCompositionDevice4, "2C6BEBFE-A603-472F-AF34-D2443356E61B")
+{
+    STDMETHOD(CreateDynamicTexture)(THIS_
+        _Outptr_ IDCompositionDynamicTexture** compositionDynamicTexture) PURE;
+};
+#endif
+
 
 #include <deque>
 #include <unordered_map>

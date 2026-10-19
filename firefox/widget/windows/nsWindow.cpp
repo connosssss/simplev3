@@ -6477,7 +6477,8 @@ void nsWindow::OnWindowPosChanged(WINDOWPOS* wp) {
   }
 
   // Recompute tiled state. IsWindowArranged is missing before Windows 10 1903.
-  static const StaticDynamicallyLinkedFunctionPtr<decltype(&::IsWindowArranged)>
+  using PFN_IsWindowArranged = BOOL(WINAPI*)(HWND);
+  static const StaticDynamicallyLinkedFunctionPtr<PFN_IsWindowArranged>
       pIsWindowArranged(L"user32.dll", "IsWindowArranged");
   SetIsTiled(mWnd && pIsWindowArranged && pIsWindowArranged(mWnd));
 
