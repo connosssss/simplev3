@@ -4,6 +4,12 @@
 
 var TabContextMenu = {
   contextTab: null,
+  setContextTabsAutoDiscardable(autoDiscardable) {
+    let tabs = this.contextTabs || (this.contextTab ? [this.contextTab] : []);
+    for (let tab of tabs) {
+      tab.undiscardable = !autoDiscardable;
+    }
+  },
 
   /*
    * Declared layout for the tab context menu and its managed submenus, keyed by
@@ -342,7 +348,16 @@ var TabContextMenu = {
   },
 
   /* Runtime-inserted menu items, exempt from the layout's coverage check. */
-  DYNAMIC_MENU_ITEM_SELECTORS: ["[tab-group-id]", "[profileid]"],
+  DYNAMIC_MENU_ITEM_SELECTORS: [
+    "[tab-group-id]",
+    "[profileid]",
+    "#context_StackSeparator",
+    "#context_StackUnderActive",
+    "#context_Unstack",
+    "#context_ToggleStack",
+    "#context_neverAutoHibernate",
+    "#context_allowAutoHibernate",
+  ],
 
   _tabContextMenuArranged: false,
   _altTabContextMenuPrefObserved: false,
@@ -817,6 +832,24 @@ var TabContextMenu = {
       );
     } else {
       unloadTabItem.hidden = true;
+    }
+
+    let neverAutoHibernateItem = document.getElementById(
+      "context_neverAutoHibernate"
+    );
+    let allowAutoHibernateItem = document.getElementById(
+      "context_allowAutoHibernate"
+    );
+    if (neverAutoHibernateItem && allowAutoHibernateItem) {
+      let allTabsAreProtected = this.contextTabs.every(tab => tab.undiscardable);
+      neverAutoHibernateItem.hidden = allTabsAreProtected;
+      allowAutoHibernateItem.hidden = !allTabsAreProtected;
+      neverAutoHibernateItem.label = this.multiselected
+        ? "Never Auto-Hibernate Tabs"
+        : "Never Auto-Hibernate";
+      allowAutoHibernateItem.label = this.multiselected
+        ? "Allow Auto-Hibernation for Tabs"
+        : "Allow Auto-Hibernation";
     }
 
     // Show Play Tab menu item if the tab has attribute activemedia-blocked

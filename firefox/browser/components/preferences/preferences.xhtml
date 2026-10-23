@@ -117,6 +117,16 @@
   <hbox flex="1">
 
     <html:moz-page-nav id="categories" data-l10n-id="category-nav-heading" allownoselection="true">
+      <html:moz-page-nav-button id="category-simple-appearance"
+        view="paneSimpleAppearance"
+        iconsrc="chrome://global/skin/icons/settings.svg"
+        label="Appearance">
+      </html:moz-page-nav-button>
+      <html:moz-page-nav-button id="category-simple-tab-management"
+        view="paneSimpleTabManagement"
+        iconsrc="chrome://browser/skin/tab.svg"
+        label="Tab Management">
+      </html:moz-page-nav-button>
       <html:moz-page-nav-button id="category-general"
         hidden="true"
         view="paneGeneral"
@@ -254,6 +264,8 @@
         </html:div>
         <vbox id="mainPrefPane">
 #include searchResults.inc.xhtml
+#include simpleAppearance.inc.xhtml
+#include simpleTabManagement.inc.xhtml
 #include main.inc.xhtml
 #include search.inc.xhtml
 #include privacy.inc.xhtml

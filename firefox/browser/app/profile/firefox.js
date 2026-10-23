@@ -25,6 +25,13 @@
 // Set add-ons abuse report related prefs specific to Firefox Desktop.
 pref("extensions.abuseReport.enabled", true);
 
+pref("simple.theme.transparent-toolbar", false);
+pref("simple.theme.transparent-toolbar.opacity", 55);
+pref("simple.tabs.hibernate.enabled", true);
+pref("simple.tabs.hibernate.timeout_minutes", 30);
+pref("widget.windows.mica", true);
+pref("widget.windows.mica.toplevel-backdrop", 2);
+
 // Enables some extra Extension System Logging (can reduce performance)
 pref("extensions.logging.enabled", false);
 
@@ -334,7 +341,7 @@ pref("browser.shell.setDefaultPDFHandler.attemptWaitTimeMs", 30000);
 
 // 0 = blank, 1 = home (browser.startup.homepage), 2 = last visited page, 3 = resume previous browser session
 // The behavior of option 3 is detailed at: http://wiki.mozilla.org/Session_Restore
-pref("browser.startup.page",                1);
+pref("browser.startup.page",                3);
 pref("browser.startup.homepage",            "about:home");
 pref("browser.startup.homepage.abouthome_cache.enabled", true);
 pref("browser.startup.homepage.abouthome_cache.loglevel", "Warn");
@@ -3859,7 +3866,7 @@ pref("toolkit.rust-components.logging.crates", "");
 pref("toolkit.rust-components.logging.internal-level", "Warn");
 
 // Settings Redesign 2025 prefs
-pref("browser.settings-redesign.enabled", true);
+pref("browser.settings-redesign.enabled", false);
 
 // A preference that will be locked to reflect whether this build has support
 // for XDG Config Home handling. Mostly used to be able to keep tests around
@@ -3886,3 +3893,7 @@ pref("distribution.mozillaonline.ignore", true);
 #ifdef XP_MACOSX
   pref("browser.macAppMenu.setAsDefaultShown", false);
 #endif
+
+pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
+pref("svg.context-properties.content.enabled", true);
+pref("layout.css.has-selector.enabled", true);

@@ -4,7 +4,7 @@
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "me"
 #define MyAppURL "https://github.com/simple-browser"
-#define MyAppExeName "firefox.exe"
+#define MyAppExeName "simple.exe"
 
 [Setup]
 ; App Information

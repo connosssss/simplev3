@@ -740,9 +740,20 @@ var gBrowserInit = {
     SessionStore.promiseAllWindowsRestored.then(() => {
       this._schedulePerWindowIdleTasks();
       document.documentElement.setAttribute("sessionrestored", "true");
+      try {
+        window.TabStacks?.refresh();
+      } catch (e) {
+        console.error("TabStacks.refresh failed:", e);
+      }
     });
 
     Referrals.maybeLockPref();
+
+    try {
+      window.TabStacks?.init();
+    } catch (e) {
+      console.error("TabStacks.init failed:", e);
+    }
 
     this.delayedStartupFinished = true;
     _resolveDelayedStartup();
@@ -1152,6 +1163,7 @@ var gBrowserInit = {
       },
       window
     );
+    window.TabStacks?.uninit();
     window.XULBrowserWindow = null;
     window.docShell.treeOwner
       .QueryInterface(Ci.nsIInterfaceRequestor)

@@ -8,6 +8,8 @@
 /* import-globals-from privacy.js */
 /* import-globals-from sync.js */
 /* import-globals-from moreFromMozilla.js */
+/* import-globals-from simpleAppearance.js */
+/* import-globals-from simpleTabManagement.js */
 /* import-globals-from findInPage.js */
 /* import-globals-from /browser/base/content/utilityOverlay.js */
 /* import-globals-from /toolkit/content/preferencesBindings.js */
@@ -564,6 +566,8 @@ function init_all() {
     document.getElementById("category-general").hidden = false;
     document.getElementById("nav-separator").hidden = true;
   }
+  register_module("paneSimpleAppearance", gSimpleAppearancePane);
+  register_module("paneSimpleTabManagement", gSimpleTabManagementPane);
   register_module("paneSearch", gSearchPane);
   register_module("panePrivacy", gPrivacyPane);
 

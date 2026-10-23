@@ -43,7 +43,7 @@ if (mode === 'build') {
 
 else if (mode === 'build:ui') {
   console.log(' building Firefox UI layer');
-  execSync('python mach build browser', { cwd: ENGINE_DIR, stdio: 'inherit', env });
+  execSync('python mach build --allow-subdirectory-build browser', { cwd: ENGINE_DIR, stdio: 'inherit', env });
 }
 
 else if (mode === 'run' || mode === 'start') {
