@@ -15,9 +15,13 @@ toolbarspring,
 
 #urlbar {
   border-radius: 8px !important;
-  background-color: #1e2235 !important;
+  background-color: transparent !important;
 }
 
+#urlbar-background {
+  background-color: #1e2235 !important;
+  border-radius: inherit !important;
+}
 
 
 

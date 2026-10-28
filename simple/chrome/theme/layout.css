@@ -2,8 +2,7 @@
 
 /* Uniform toolbar color when transparency is off */
 #TabsToolbar,
-#tab-stack-bars,
-#nav-bar {
+#tab-stack-bars {
   background-color: #1e2235 !important;
   background-image: none !important;
 }
