@@ -485,6 +485,7 @@ var TabStacks = {
     openTrustedLinkIn(BROWSER_NEW_TAB_URL, "tab", {
       relatedToCurrent: true,
       inBackground: false,
+      skipTabAnimation: true,
     });
   },
 
