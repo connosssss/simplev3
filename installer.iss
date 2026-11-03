@@ -1,10 +1,10 @@
 ; Documentation: https://jrsoftware.org/ishelp/
 
-#define MyAppName "simple"
+#define MyAppName "simplev3"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "me"
 #define MyAppURL "https://github.com/simple-browser"
-#define MyAppExeName "simple.exe"
+#define MyAppExeName "firefox.exe"
 
 [Setup]
 ; App Information
