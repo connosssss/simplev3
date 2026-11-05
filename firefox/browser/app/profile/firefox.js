@@ -31,6 +31,7 @@ pref("simple.tabs.hibernate.enabled", true);
 pref("simple.tabs.hibernate.timeout_minutes", 30);
 pref("widget.windows.mica", true);
 pref("widget.windows.mica.toplevel-backdrop", 2);
+pref("general.useragent.compatMode.firefox", true);
 
 // Enables some extra Extension System Logging (can reduce performance)
 pref("extensions.logging.enabled", false);
@@ -77,8 +78,9 @@ pref("extensions.webextensions.remote", true);
 pref("extensions.webextensions.pageActionIconDarkModeFilter.enabled", false);
 
 // Require signed add-ons by default
-pref("extensions.langpacks.signatures.required", true);
-pref("xpinstall.signatures.required", true);
+pref("extensions.langpacks.signatures.required", false);
+pref("xpinstall.signatures.required", false);
+pref("xpinstall.whitelist.required", false);
 
 // Enable data collection permissions.
 pref("extensions.dataCollectionPermissions.enabled", true);

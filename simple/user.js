@@ -8,3 +8,9 @@ user_pref("svg.context-properties.content.enabled", true);
 user_pref("layout.css.has-selector.enabled", true);
 
 user_pref("browser.tabs.inTitlebar", 1);
+
+user_pref("general.useragent.compatMode.firefox", true);
+
+user_pref("xpinstall.signatures.required", false);
+user_pref("extensions.langpacks.signatures.required", false);
+user_pref("xpinstall.whitelist.required", false);
