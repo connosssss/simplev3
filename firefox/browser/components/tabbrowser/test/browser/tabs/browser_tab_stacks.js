@@ -733,3 +733,90 @@ add_task(async function test_drag_stack_in_regular_tabbar() {
     BrowserTestUtils.removeTab(first);
   }
 });
+
+add_task(async function test_stack_multiselected_tabs() {
+  let tab1 = BrowserTestUtils.addTab(gBrowser, "about:blank");
+  let tab2 = BrowserTestUtils.addTab(gBrowser, "about:robots");
+  let tab3 = BrowserTestUtils.addTab(gBrowser, "about:mozilla");
+
+  gBrowser.selectedTab = tab1;
+  gBrowser.addToMultiSelectedTabs(tab2);
+  gBrowser.addToMultiSelectedTabs(tab3);
+
+  Assert.equal(gBrowser.multiSelectedTabsCount, 3, "Three tabs are multiselected");
+
+  TabStacks.stackSelectedTabs([tab1, tab2, tab3]);
+
+  let stackId = TabStacks.stackId(tab1);
+  Assert.ok(stackId, "First tab has a stack ID");
+  Assert.equal(TabStacks.stackId(tab2), stackId, "Second tab shares the stack ID");
+  Assert.equal(TabStacks.stackId(tab3), stackId, "Third tab shares the stack ID");
+
+  Assert.ok(tab1.hasAttribute("stack-current"), "First tab is lead/parent");
+  Assert.ok(tab2.hasAttribute("stack-child"), "Second tab is child");
+  Assert.ok(tab3.hasAttribute("stack-child"), "Third tab is child");
+  Assert.equal(gBrowser.multiSelectedTabsCount, 0, "Multiselection cleared after stacking");
+
+  // Verify contiguous order
+  let idx1 = gBrowser.tabs.indexOf(tab1);
+  let idx2 = gBrowser.tabs.indexOf(tab2);
+  let idx3 = gBrowser.tabs.indexOf(tab3);
+  Assert.equal(idx2, idx1 + 1, "Tab 2 is immediately after Tab 1");
+  Assert.equal(idx3, idx2 + 1, "Tab 3 is immediately after Tab 2");
+
+  TabStacks.unstackSelectedTabs([tab1, tab2, tab3]);
+  Assert.ok(!TabStacks.stackId(tab1), "Tab 1 is unstacked");
+  Assert.ok(!TabStacks.stackId(tab2), "Tab 2 is unstacked");
+  Assert.ok(!TabStacks.stackId(tab3), "Tab 3 is unstacked");
+
+  BrowserTestUtils.removeTab(tab3);
+  BrowserTestUtils.removeTab(tab2);
+  BrowserTestUtils.removeTab(tab1);
+});
+
+add_task(async function test_multiselect_stack_context_menu() {
+  let tab1 = BrowserTestUtils.addTab(gBrowser, "about:blank");
+  let tab2 = BrowserTestUtils.addTab(gBrowser, "about:robots");
+
+  let stackUnderActive = document.getElementById("context_StackUnderActive");
+  let stackSelected = document.getElementById("context_StackSelectedTabs");
+  let unstack = document.getElementById("context_Unstack");
+  let unstackSelected = document.getElementById("context_UnstackSelectedTabs");
+
+  // 1. Single tab context menu
+  TabContextMenu.contextTab = tab2;
+  TabContextMenu.multiselected = false;
+  gBrowser.selectedTab = tab1;
+  TabStacks.updateMenu();
+
+  Assert.ok(!stackUnderActive.hidden, "Stack Under Active Tab is visible for single unstacked non-active tab");
+  Assert.ok(stackSelected.hidden, "Stack Selected Tabs is hidden for single tab");
+
+  // 2. Multiselected context menu (unstacked)
+  TabContextMenu.contextTab = tab2;
+  TabContextMenu.multiselected = true;
+  TabContextMenu.contextTabs = [tab1, tab2];
+  TabStacks.updateMenu();
+
+  Assert.ok(stackUnderActive.hidden, "Stack Under Active Tab is hidden when tabs are multiselected");
+  Assert.ok(!stackSelected.hidden, "Stack Selected Tabs is visible when tabs are multiselected");
+  Assert.ok(unstackSelected.hidden, "Unstack Selected Tabs is hidden when none are stacked");
+
+  // 3. Stack them and check menu again
+  TabStacks.stackSelectedTabs([tab1, tab2]);
+  TabContextMenu.contextTab = tab2;
+  TabContextMenu.multiselected = true;
+  TabContextMenu.contextTabs = [tab1, tab2];
+  TabStacks.updateMenu();
+
+  Assert.ok(stackSelected.hidden, "Stack Selected Tabs is hidden when all selected tabs are already in the stack");
+  Assert.ok(!unstackSelected.hidden, "Unstack Selected Tabs is visible when selected tabs are in a stack");
+
+  // 4. Unstack via context menu command
+  TabStacks.unstackSelectedTabs([tab1, tab2]);
+  Assert.ok(!TabStacks.stackId(tab1), "Tab 1 unstacked");
+  Assert.ok(!TabStacks.stackId(tab2), "Tab 2 unstacked");
+
+  BrowserTestUtils.removeTab(tab2);
+  BrowserTestUtils.removeTab(tab1);
+});

@@ -120,10 +120,24 @@ document.addEventListener(
           });
           break;
         case "context_StackUnderActive":
-          TabStacks.stack(TabContextMenu.contextTab, gBrowser.selectedTab);
+          if (TabContextMenu.multiselected) {
+            TabStacks.stackSelectedTabs(TabContextMenu.contextTabs);
+          } else {
+            TabStacks.stack(TabContextMenu.contextTab, gBrowser.selectedTab);
+          }
+          break;
+        case "context_StackSelectedTabs":
+          TabStacks.stackSelectedTabs(TabContextMenu.contextTabs);
           break;
         case "context_Unstack":
-          TabStacks.unstack(TabContextMenu.contextTab);
+          if (TabContextMenu.multiselected) {
+            TabStacks.unstackSelectedTabs(TabContextMenu.contextTabs);
+          } else {
+            TabStacks.unstack(TabContextMenu.contextTab);
+          }
+          break;
+        case "context_UnstackSelectedTabs":
+          TabStacks.unstackSelectedTabs(TabContextMenu.contextTabs);
           break;
         case "context_ToggleStack":
           TabStacks.toggle(TabContextMenu.contextTab);
