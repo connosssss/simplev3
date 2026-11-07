@@ -16,6 +16,10 @@
   min-width: 0;
 }
 
+#tab-stack-bars-container {
+  flex-direction: column;
+}
+
 .tab-stack-newtab-button {
   flex: 0 0 auto;
   list-style-image: url("chrome://global/skin/icons/plus.svg");
@@ -60,10 +64,6 @@
   font-size: 0.85em;
   margin-inline-end: 4px;
   pointer-events: none;
-}
-
-.tabbrowser-tab[stack-child] > .tab-stack > .tab-background {
-  background-color: color-mix(in srgb, white 8%, transparent) !important;
 }
 
 #tabbrowser-tabs[orient="vertical"] .tabbrowser-tab[stack-child] > .tab-stack {

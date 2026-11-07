@@ -845,7 +845,7 @@ var TabStacks = {
     }
   },
 
-  createStackBarTab(tab) {
+  createStackBarTab(tab, selected = tab.selected, showStackUI = true) {
     let button = document.createXULElement("toolbarbutton");
     button.className = "toolbarbutton-1 tabbrowser-tab tab-stack-tab";
     button.setAttribute("context", "tabContextMenu");
@@ -853,18 +853,32 @@ var TabStacks = {
     button.setAttribute("label", tab.label);
     button.setAttribute("tooltiptext", tab.label);
     button.setAttribute("fadein", "");
-    button.setAttribute("aria-selected", tab.selected);
-    button.toggleAttribute("selected", tab.selected);
+    button.setAttribute("aria-selected", selected);
+    button.toggleAttribute("selected", selected);
     button.toggleAttribute(
       "visuallyselected",
       tab.hasAttribute("visuallyselected")
     );
+    button.toggleAttribute(
+      "stack-current",
+      showStackUI && tab.hasAttribute("stack-current")
+    );
+    button.toggleAttribute(
+      "stack-collapsed",
+      showStackUI && tab.hasAttribute("stack-collapsed")
+    );
+    button.toggleAttribute("stack-child", tab.hasAttribute("stack-child"));
     button.tab = tab;
     button.setAttribute("draggable", "true");
 
     let tabStack = tab.querySelector(".tab-stack").cloneNode(true);
-    tabStack.querySelector(".tab-stack-count")?.remove();
+    if (!showStackUI) {
+      tabStack.querySelector(".tab-stack-count")?.remove();
+    }
     button.append(tabStack);
+    button.addEventListener("contextmenu", () => {
+      gBrowser.translateTabContextMenu();
+    });
     button.addEventListener("mousedown", event => event.stopPropagation());
     button.addEventListener("dblclick", event => {
       event.preventDefault();
@@ -963,28 +977,19 @@ var TabStacks = {
       button.removeAttribute("stack-drop-before");
       button.removeAttribute("stack-drop-after");
 
-      if (this.stackId(draggedTab) === this.stackId(tab)) {
+      let row = button.closest(".tab-stack-bar-row");
+      let root = row?.stackRoot;
+      if (!root) {
+        return;
+      }
+
+      if (this.parent(draggedTab) == root && tab != root) {
         this.moveInStack(draggedTab, tab, dropBefore);
-      } 
-      else {
-        let targetStackId = this.stackId(tab);
-        let movingTabs = this.stackTabs(draggedTab);
-        if (!movingTabs.length) {
-          movingTabs = [draggedTab];
+      } else {
+        this.stack(draggedTab, root);
+        if (this.parent(draggedTab) == root && tab != root) {
+          this.moveInStack(draggedTab, tab, dropBefore);
         }
-
-        for (let movingTab of movingTabs) {
-          this.setStack(movingTab, targetStackId);
-        }
-
-        if (dropBefore) {
-          gBrowser.moveTabsBefore(movingTabs, tab);
-        } 
-        else {
-          gBrowser.moveTabsAfter(movingTabs, tab);
-        }
-
-        this.refresh();
       }
 
       this._draggedStackTab = null;
@@ -1094,35 +1099,19 @@ var TabStacks = {
         child.removeAttribute("stack-drop-after");
       }
 
-      let activeStack = this.activeStackTabs();
-      if (!activeStack.length) {
-        let firstTab = row.querySelector(".tab-stack-tab")?.tab;
-        if (firstTab) {
-          activeStack = this.stackTabs(firstTab);
-        }
-      }
-      if (!activeStack.length) {
+      let root = row.stackRoot;
+      if (!root) {
         return;
       }
 
-      let targetStackId = this.stackId(activeStack[0]);
-      let lastTab = activeStack.at(-1);
+      let lastTab = this.children(root).at(-1);
 
-      if (this.stackId(draggedTab) === targetStackId) {
-        if (draggedTab !== lastTab) {
+      if (this.parent(draggedTab) == root) {
+        if (lastTab && draggedTab !== lastTab) {
           this.moveInStack(draggedTab, lastTab, false);
         }
-      } 
-      else {
-        let movingTabs = this.stackTabs(draggedTab);
-        if (!movingTabs.length) {
-          movingTabs = [draggedTab];
-        }
-        for (let movingTab of movingTabs) {
-          this.setStack(movingTab, targetStackId);
-        }
-        gBrowser.moveTabsAfter(movingTabs, lastTab);
-        this.refresh();
+      } else {
+        this.stack(draggedTab, root);
       }
 
       this._draggedStackTab = null;
@@ -1133,6 +1122,22 @@ var TabStacks = {
     });
   },
 
+  stackRows() {
+    let rows = [];
+    let tab = gBrowser.selectedTab;
+    while (tab) {
+      let stack = this.stackTabs(tab);
+      if (!stack.length) {
+        break;
+      }
+      if (!this.isCollapsed(stack[0])) {
+        rows.unshift(stack);
+      }
+      tab = this.parent(stack[0]);
+    }
+    return rows;
+  },
+
   renderStackBars() {
     let bar = document.getElementById("tab-stack-bars");
     let container = document.getElementById("tab-stack-bars-container");
@@ -1141,36 +1146,36 @@ var TabStacks = {
       return;
     }
 
-    let stack =
+    let stacks =
       gBrowser.tabContainer.getAttribute("orient") == "horizontal"
-        ? this.activeStackTabs()
+        ? this.stackRows()
         : [];
-    if (stack.length < 2 || this.isCollapsed(stack[0])) {
-      stack = [];
-    }
 
-    bar.hidden = !stack.length;
-    if (!stack.length) {
+    bar.hidden = !stacks.length;
+    if (!stacks.length) {
       container.replaceChildren();
       return;
     }
 
-    let row = document.createXULElement("hbox");
-
-    row.className = "tab-stack-bar-row";
-    row.setAttribute("role", "tablist");
-    row.append(
-      ...stack.map(tab => this.createStackBarTab(tab)),
-      this.createStackBarNewTabButton()
-    );
-    this._setupStackBarRowDnd(row);
-    
-    container.replaceChildren(row);
+    let rows = stacks.map(stack => {
+      let row = document.createXULElement("hbox");
+      row.className = "tab-stack-bar-row";
+      row.setAttribute("role", "tablist");
+      row.stackRoot = stack[0];
+      let currentTab = this.currentStackTab(stack);
+      row.append(
+        ...stack.map((tab, index) =>
+          this.createStackBarTab(tab, tab == currentTab, index != 0)
+        ),
+        this.createStackBarNewTabButton()
+      );
+      this._setupStackBarRowDnd(row);
+      return row;
+    });
+    container.replaceChildren(...rows);
   },
 
   refresh() {
-    let stacks = new Map();
-
     for (let tab of this.tabs()) {
       tab.toggleAttribute("stack-child", false);
       tab.toggleAttribute("stack-hidden", false);
