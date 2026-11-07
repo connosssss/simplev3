@@ -6,6 +6,8 @@
 
 var TabStacks = {
   STACK_KEY: "tab-stack",
+  PARENT_KEY: "tab-stack.parent",
+  TAB_ID_KEY: "tab-stack.id",
   COLLAPSED_KEY: "tab-stack.collapsed",
 
   get SessionStore() {
@@ -36,9 +38,11 @@ var TabStacks = {
     }
     this._initialized = true;
     this._lastSelectedTabs = new Map();
+    this.migrateLegacyStacks();
 
     this._onTabOpen = event => {
-      let sourceTab = event.target.openerTab;
+      let sourceTab = this._newTabParent || event.target.openerTab;
+      this._newTabParent = null;
       if (sourceTab) {
         this.addToSourceStack(event.target, sourceTab);
       }
@@ -46,9 +50,12 @@ var TabStacks = {
     };
     this._onTabClose = () => this.refresh();
     this._onTabSelect = event => {
-      let stackId = this.stackId(event.target);
-      if (stackId) {
-        this._lastSelectedTabs.set(stackId, event.target);
+      let child = event.target;
+      let parent = this.parent(child);
+      while (parent) {
+        this._lastSelectedTabs.set(this.tabId(parent), child);
+        child = parent;
+        parent = this.parent(child);
       }
       if (this._isDraggingTab || this._mouseDownOnTab) {
         return;
@@ -135,8 +142,8 @@ var TabStacks = {
       if (draggedTab) {
         if (
           !this._draggedStackTab &&
-          !this.stackId(draggedTab) &&
-          !(targetTab && this.stackId(targetTab))
+          !this.isStacked(draggedTab) &&
+          !(targetTab && this.isStacked(targetTab))
         ) {
           return;
         }
@@ -171,8 +178,8 @@ var TabStacks = {
       if (
         !draggedTab ||
         (!this._draggedStackTab &&
-          !this.stackId(draggedTab) &&
-          !(targetTab && this.stackId(targetTab)))
+          !this.isStacked(draggedTab) &&
+          !(targetTab && this.isStacked(targetTab)))
       ) {
         return;
       }
@@ -191,14 +198,14 @@ var TabStacks = {
           : event.clientX < tabRect.left + tabRect.width / 2;
       }
 
-      if (!this._draggedStackTab && this.stackId(draggedTab)) {
+      if (!this._draggedStackTab && this.isStacked(draggedTab)) {
         this.moveStack(draggedTab, targetTab, dropBefore);
       } else {
         this.setStack(draggedTab, "");
         this.SessionStore.deleteCustomTabValue(draggedTab, this.COLLAPSED_KEY);
 
         if (targetTab && targetTab !== draggedTab) {
-          let targetTabs = this.stackTabs(targetTab);
+          let targetTabs = this.subtree(targetTab);
           targetTab = targetTabs.length
             ? targetTabs[dropBefore ? 0 : targetTabs.length - 1]
             : targetTab;
@@ -438,50 +445,120 @@ var TabStacks = {
     return [...gBrowser.tabs].filter(tab => !tab.closing);
   },
 
-  stackId(tab) {
-    return this.SessionStore.getCustomTabValue(tab, this.STACK_KEY);
+  tabId(tab) {
+    let id = this.SessionStore.getCustomTabValue(tab, this.TAB_ID_KEY);
+    if (!id) {
+      id = Services.uuid.generateUUID().toString();
+      this.SessionStore.setCustomTabValue(tab, this.TAB_ID_KEY, id);
+    }
+    return id;
   },
 
-  setStack(tab, stackId) {
-    
-    if (stackId) {
-      this.SessionStore.setCustomTabValue(tab, this.STACK_KEY, stackId);
-    } 
-    
-    else {
-      this.SessionStore.deleteCustomTabValue(tab, this.STACK_KEY);
+  stackId(tab) {
+    return this.SessionStore.getCustomTabValue(tab, this.PARENT_KEY);
+  },
+
+  setStack(tab, parentId) {
+    if (parentId) {
+      this.SessionStore.setCustomTabValue(tab, this.PARENT_KEY, parentId);
+    } else {
+      this.SessionStore.deleteCustomTabValue(tab, this.PARENT_KEY);
+    }
+  },
+
+  parent(tab) {
+    let parentId = this.stackId(tab);
+    if (!parentId) {
+      return null;
+    }
+    let parent = this.tabs().find(candidate => this.tabId(candidate) == parentId);
+    if (!parent) {
+      this.setStack(tab, "");
+    }
+    return parent || null;
+  },
+
+  children(tab) {
+    let tabId = this.tabId(tab);
+    return this.tabs().filter(candidate => this.stackId(candidate) == tabId);
+  },
+
+  subtree(tab) {
+    let tabs = [tab];
+    for (let index = 0; index < tabs.length; index++) {
+      tabs.push(...this.children(tabs[index]));
+    }
+    let tabOrder = new Map(this.tabs().map((candidate, index) => [candidate, index]));
+    return tabs.sort((a, b) => tabOrder.get(a) - tabOrder.get(b));
+  },
+
+  isAncestor(ancestor, tab) {
+    let parent = this.parent(tab);
+    while (parent) {
+      if (parent == ancestor) {
+        return true;
+      }
+      parent = this.parent(parent);
+    }
+    return false;
+  },
+
+  topLevelTab(tab) {
+    let parent = this.parent(tab);
+    while (parent) {
+      tab = parent;
+      parent = this.parent(tab);
+    }
+    return tab;
+  },
+
+  migrateLegacyStacks() {
+    let stacks = new Map();
+    for (let tab of this.tabs()) {
+      let stackId = this.SessionStore.getCustomTabValue(tab, this.STACK_KEY);
+      if (!stackId) {
+        continue;
+      }
+      if (!stacks.has(stackId)) {
+        stacks.set(stackId, []);
+      }
+      stacks.get(stackId).push(tab);
+    }
+
+    for (let stack of stacks.values()) {
+      let root = stack.find(tab => tab.selected) || stack[0];
+      let collapsed = stack.some(tab => this.isCollapsed(tab));
+      for (let tab of stack) {
+        this.SessionStore.deleteCustomTabValue(tab, this.STACK_KEY);
+        this.SessionStore.deleteCustomTabValue(tab, this.COLLAPSED_KEY);
+        if (tab != root) {
+          this.setStack(tab, this.tabId(root));
+        }
+      }
+      if (collapsed) {
+        this.SessionStore.setCustomTabValue(root, this.COLLAPSED_KEY, "true");
+      }
     }
   },
 
   addToSourceStack(tab, sourceTab) {
-    let sourceStackId = this.stackId(sourceTab);
-    if (!sourceStackId || this.stackId(tab) || tab.pinned || tab == sourceTab) {
+    if (
+      !this.isStacked(sourceTab) ||
+      this.parent(tab) ||
+      tab.pinned ||
+      tab == sourceTab
+    ) {
       return;
     }
-
-    let lastInStack = this.stackTabs(sourceTab).at(-1);
-    if (!lastInStack) {
-      return;
-    }
-    this.setStack(tab, sourceStackId);
-    gBrowser.moveTabAfter(tab, lastInStack);
-
-    if (!tab.hasAttribute("fadein")) {
-      let observer = new MutationObserver(() => {
-        if (tab.hasAttribute("fadein")) {
-          observer.disconnect();
-          this.refresh();
-        }
-      });
-      observer.observe(tab, { attributes: true, attributeFilter: ["fadein"] });
-    }
+    this.stack(tab, sourceTab);
   },
 
-  openTabInActiveStack() {
-    if (!this.activeStackTabs().length) {
+  openTabInStack(parent) {
+    if (!parent || parent.pinned || parent.closing) {
       return;
     }
 
+    this._newTabParent = parent;
     openTrustedLinkIn(BROWSER_NEW_TAB_URL, "tab", {
       relatedToCurrent: true,
       inBackground: false,
@@ -489,79 +566,64 @@ var TabStacks = {
     });
   },
 
+  openTabInActiveStack() {
+    let stack = this.activeStackTabs();
+    if (stack.length) {
+      this.openTabInStack(stack[0]);
+    }
+  },
+
   stackTabs(tab) {
-    let stackId = this.stackId(tab);
-    return stackId
-      ? this.tabs().filter(candidate => this.stackId(candidate) == stackId)
-      : [];
+    let root = this.children(tab).length ? tab : this.parent(tab);
+    return root ? [root, ...this.children(root)] : [];
   },
 
   currentStackTab(stack) {
+    let root = stack[0];
     return (
-      stack.find(tab => tab.selected) ||
-      stack.find(tab => tab == this._lastSelectedTabs.get(this.stackId(tab))) ||
-      stack[0]
+      [...stack]
+        .reverse()
+        .find(
+          tab =>
+            tab == gBrowser.selectedTab || this.isAncestor(tab, gBrowser.selectedTab)
+        ) ||
+      this._lastSelectedTabs.get(this.tabId(root)) ||
+      root
     );
   },
 
   isParent(tab) {
-    let stack = this.stackTabs(tab);
-    if (stack.length < 2) return false;
-    return tab === this.currentStackTab(stack);
+    return this.children(tab).length > 0;
   },
 
   isChild(tab) {
-    let stack = this.stackTabs(tab);
-    if (stack.length < 2) return false;
-    return tab !== this.currentStackTab(stack);
+    return !!this.parent(tab);
+  },
+
+  isStacked(tab) {
+    return this.isParent(tab) || this.isChild(tab);
   },
 
   stack(tab, parent) {
     if (Array.isArray(tab)) {
       return this.stackSelectedTabs(tab);
     }
-
     if (
       !tab ||
       !parent ||
       tab == parent ||
       tab.pinned ||
-      parent.pinned
+      parent.pinned ||
+      this.isAncestor(tab, parent) ||
+      this.parent(tab) == parent
     ) {
       return;
     }
 
-    let tabStackId = this.stackId(tab);
-    let parentStackId = this.stackId(parent);
-
-    if (tabStackId && tabStackId == parentStackId) {
-      return;
-    }
-
-    let movingTabs = this.stackTabs(tab);
-
-    if (!movingTabs.length) {
-      movingTabs = [tab];
-    }
-    let targetTabs = this.stackTabs(parent);
-
-    if (!targetTabs.length) {
-      targetTabs = [parent];
-    }
-
-    let stackId = parentStackId || Services.uuid.generateUUID().toString();
-
-
-    for (let stackTab of targetTabs) {
-      this.setStack(stackTab, stackId);
-    }
-
-    for (let movingTab of movingTabs) {
-      this.setStack(movingTab, stackId);
-    }
-
-
-    gBrowser.moveTabsAfter(movingTabs, targetTabs.at(-1));
+    let movingTabs = this.subtree(tab);
+    let lastParentTab = this.subtree(parent).at(-1);
+    this.setStack(tab, this.tabId(parent));
+    gBrowser.moveTabsAfter(movingTabs, lastParentTab);
     this.refresh();
   },
 
@@ -573,51 +635,23 @@ var TabStacks = {
       return;
     }
 
-    let anchor =
-      validTabs.includes(gBrowser.selectedTab) &&
-      this.stackId(gBrowser.selectedTab)
-        ? gBrowser.selectedTab
-        : validTabs[0];
+    let anchor = validTabs.includes(gBrowser.selectedTab)
+      ? gBrowser.selectedTab
+      : validTabs[0];
+    anchor = validTabs.find(tab => tab == anchor || this.isAncestor(tab, anchor));
+    let roots = validTabs.filter(
+      tab => !validTabs.some(candidate => candidate != tab && this.isAncestor(candidate, tab))
+    );
 
-    let targetTabs = this.stackTabs(anchor);
-    if (!targetTabs.length) {
-      targetTabs = [anchor];
-    }
-
-    let movingTabs = [];
-    for (let tab of validTabs) {
-      if (targetTabs.includes(tab)) {
-        continue;
-      }
-      let tabStack = this.stackTabs(tab);
-      let tabsToAdd = tabStack.length ? tabStack : [tab];
-      for (let t of tabsToAdd) {
-        if (!targetTabs.includes(t) && !movingTabs.includes(t)) {
-          movingTabs.push(t);
-        }
+    for (let tab of roots) {
+      if (tab != anchor) {
+        this.stack(tab, anchor);
       }
     }
-
-    if (!movingTabs.length) {
-      return;
-    }
-
-    let stackId =
-      this.stackId(anchor) || Services.uuid.generateUUID().toString();
-
-    for (let tab of targetTabs) {
-      this.setStack(tab, stackId);
-    }
-    for (let tab of movingTabs) {
-      this.setStack(tab, stackId);
-    }
-
-    gBrowser.moveTabsAfter(movingTabs, targetTabs.at(-1));
 
     if (gBrowser.clearMultiSelectedTabs) {
       gBrowser.clearMultiSelectedTabs();
     }
-
     this.refresh();
   },
 
@@ -636,7 +670,7 @@ var TabStacks = {
   unstackSelectedTabs(tabs) {
     let validTabs = (tabs || []).filter(tab => tab && !tab.closing);
     for (let tab of validTabs) {
-      if (this.stackId(tab)) {
+      if (this.isChild(tab)) {
         this.setStack(tab, "");
         this.SessionStore.deleteCustomTabValue(tab, this.COLLAPSED_KEY);
       }
@@ -648,41 +682,32 @@ var TabStacks = {
   },
 
   isCollapsed(tab) {
-    return (
-      this.SessionStore.getCustomTabValue(tab, this.COLLAPSED_KEY) == "true"
-    );
+    return this.SessionStore.getCustomTabValue(tab, this.COLLAPSED_KEY) == "true";
   },
 
   toggle(tab) {
     let stack = this.stackTabs(tab);
-
     if (stack.length < 2) {
       return;
     }
 
-    let collapsed = !this.isCollapsed(stack[0]);
-
-    if (collapsed && stack.includes(gBrowser.selectedTab) && tab != gBrowser.selectedTab) {
-      gBrowser.selectedTab = tab;
-    }
-
-    for (let stackTab of stack) {
-      if (collapsed) {
-        this.SessionStore.setCustomTabValue(stackTab, this.COLLAPSED_KEY, "true");
-      } 
-      else {
-        this.SessionStore.deleteCustomTabValue(stackTab, this.COLLAPSED_KEY);
+    let root = stack[0];
+    if (this.isCollapsed(root)) {
+      this.SessionStore.deleteCustomTabValue(root, this.COLLAPSED_KEY);
+    } else {
+      if (this.isAncestor(root, gBrowser.selectedTab)) {
+        gBrowser.selectedTab = root;
       }
+      this.SessionStore.setCustomTabValue(root, this.COLLAPSED_KEY, "true");
     }
     this.refresh();
   },
 
   expandStack(tab) {
-    let stack = this.stackTabs(tab);
-    if (stack.length && this.isCollapsed(stack[0])) {
-      for (let stackTab of stack) {
-        this.SessionStore.deleteCustomTabValue(stackTab, this.COLLAPSED_KEY);
-      }
+    let root = this.children(tab).length ? tab : this.parent(tab);
+    while (root) {
+      this.SessionStore.deleteCustomTabValue(root, this.COLLAPSED_KEY);
+      root = this.parent(root);
     }
   },
 
@@ -696,41 +721,36 @@ var TabStacks = {
     if (!tab || !targetTab || tab === targetTab) {
       return;
     }
-    let tabStackId = this.stackId(tab);
-    let targetStackId = this.stackId(targetTab);
-    if (!tabStackId || tabStackId !== targetStackId) {
+    if (!this.parent(tab) || this.parent(tab) != this.parent(targetTab)) {
       return;
     }
+    let movingTabs = this.subtree(tab);
+    let targetTabs = this.subtree(targetTab);
     if (before) {
-      gBrowser.moveTabBefore(tab, targetTab);
+      gBrowser.moveTabsBefore(movingTabs, targetTabs[0]);
     } else {
-      gBrowser.moveTabAfter(tab, targetTab);
+      gBrowser.moveTabsAfter(movingTabs, targetTabs.at(-1));
     }
     this.refresh();
   },
 
   moveStack(tab, targetTab, before = false) {
-    let movingTabs = this.stackTabs(tab);
-    if (!movingTabs.length || !targetTab || movingTabs.includes(targetTab)) {
+    let movingTabs = this.subtree(tab);
+    if (!targetTab || movingTabs.includes(targetTab)) {
       return;
     }
-
-    let targetTabs = this.stackTabs(targetTab);
-    targetTab = targetTabs.length ? targetTabs[before ? 0 : targetTabs.length - 1] : targetTab;
+    let targetTabs = this.subtree(targetTab);
 
     if (before) {
-      gBrowser.moveTabsBefore(movingTabs, targetTab);
+      gBrowser.moveTabsBefore(movingTabs, targetTabs[0]);
     } else {
-      gBrowser.moveTabsAfter(movingTabs, targetTab);
+      gBrowser.moveTabsAfter(movingTabs, targetTabs.at(-1));
     }
   },
 
   updateMenu() {
     let tab = TabContextMenu.contextTab;
     let parent = gBrowser.selectedTab;
-    let tabStackId = tab && this.stackId(tab);
-    let parentStackId = parent && this.stackId(parent);
-
     let isMulti = !!TabContextMenu.multiselected;
     let contextTabs =
       isMulti && TabContextMenu.contextTabs
@@ -742,27 +762,34 @@ var TabStacks = {
       t => t && !t.pinned && !t.closing
     );
 
-    let canStackMulti = false;
-    if (isMulti && unpinnedSelectedTabs.length >= 2) {
-      let firstId = this.stackId(unpinnedSelectedTabs[0]);
-      let allInSameStack =
-        !!firstId &&
-        unpinnedSelectedTabs.every(t => this.stackId(t) === firstId);
-      canStackMulti = !allInSameStack;
-    }
+    let stackRoots = unpinnedSelectedTabs.filter(
+      tab =>
+        !unpinnedSelectedTabs.some(
+          candidate => candidate != tab && this.isAncestor(candidate, tab)
+        )
+    );
+    let canStackMulti = isMulti && stackRoots.length >= 2;
 
+    let canCreateNested =
+      !isMulti &&
+      tab &&
+      tab == parent &&
+      !tab.pinned &&
+      this.isChild(tab);
     let canStackSingle =
+      canCreateNested ||
       !isMulti &&
       tab &&
       parent &&
       tab != parent &&
       !tab.pinned &&
       !parent.pinned &&
-      (!tabStackId || tabStackId != parentStackId);
+      !this.isAncestor(tab, parent) &&
+      this.parent(tab) != parent;
 
     let canUnstackMulti =
       isMulti &&
-      unpinnedSelectedTabs.some(t => this.isChild(t) || this.stackId(t));
+      unpinnedSelectedTabs.some(t => this.isChild(t));
     let canUnstackSingle = !isMulti && tab && this.isChild(tab);
 
     let stack = document.getElementById("context_StackUnderActive");
@@ -776,10 +803,15 @@ var TabStacks = {
       stackSelected.hidden = !canStackMulti;
       if (stack) {
         stack.hidden = !canStackSingle;
+        stack.label = canCreateNested
+          ? "Create Nested Tab Stack"
+          : "Stack Under Active Tab";
       }
     } else if (stack) {
       stack.hidden = !canStackSingle && !canStackMulti;
-      stack.label = canStackMulti
+      stack.label = canCreateNested
+        ? "Create Nested Tab Stack"
+        : canStackMulti
         ? "Stack Selected Tabs"
         : "Stack Under Active Tab";
     }
@@ -1149,45 +1181,34 @@ var TabStacks = {
       let existingBadge = tab.querySelector(".tab-stack-count");
       if (existingBadge) existingBadge.remove();
 
-      let stackId = this.stackId(tab);
-
-      if (stackId) {
-        if (!stacks.has(stackId)) {
-          stacks.set(stackId, []);
-        }
-
-        stacks.get(stackId).push(tab);
-      }
-    }
-
-    for (let stack of stacks.values()) {
-      if (stack.length < 2) {
-        this.setStack(stack[0], "");
-        this.SessionStore.deleteCustomTabValue(stack[0], this.COLLAPSED_KEY);
-        continue;
+      let parent = this.parent(tab);
+      let depth = 0;
+      let hidden = false;
+      while (parent) {
+        depth++;
+        hidden ||= this.isCollapsed(parent);
+        parent = this.parent(parent);
       }
 
-      let collapsed = this.isCollapsed(stack[0]);
-      let currentTab = this.currentStackTab(stack);
-      for (let tab of stack) {
-        let isCurrent = tab === currentTab;
-        tab.toggleAttribute("stack-child", !isCurrent);
-        tab.toggleAttribute("stack-hidden", !isCurrent && collapsed);
-        tab.toggleAttribute("stack-current", isCurrent);
-        tab.toggleAttribute("stack-collapsed", isCurrent && collapsed);
-        tab.style.setProperty("--stack-depth", isCurrent ? 0 : 1);
-        if (isCurrent) {
-          tab.dataset.stackTabCount = stack.length;
-          let closeBtn = tab.querySelector(".tab-close-button");
-          if (closeBtn) {
-            let badge = document.createElement("span");
-            badge.className = "tab-stack-count";
-            badge.textContent = stack.length;
-            closeBtn.parentNode.insertBefore(badge, closeBtn);
-          }
+      tab.toggleAttribute("stack-child", depth > 0);
+      tab.toggleAttribute("stack-hidden", hidden);
+      tab.style.setProperty("--stack-depth", depth);
+
+      let children = this.children(tab);
+      if (children.length) {
+        let collapsed = this.isCollapsed(tab);
+        let tabCount = this.subtree(tab).length;
+        tab.toggleAttribute("stack-current", true);
+        tab.toggleAttribute("stack-collapsed", collapsed);
+        tab.dataset.stackTabCount = tabCount;
+        let closeBtn = tab.querySelector(".tab-close-button");
+        if (closeBtn) {
+          let badge = document.createElement("span");
+          badge.className = "tab-stack-count";
+          badge.textContent = tabCount;
+          closeBtn.parentNode.insertBefore(badge, closeBtn);
         }
       }
-
     }
     this.renderStackBars();
   },
