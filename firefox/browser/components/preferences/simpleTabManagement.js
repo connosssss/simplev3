@@ -77,26 +77,27 @@ var gSimpleTabManagementPane = {
     );
     const stacks = new Map();
     const unstackedTabs = [];
+    const tabStacks = this._browserWindow.TabStacks;
+    const processedRoots = new Set();
 
     for (const tab of tabs) {
-      const stackId = this._browserWindow.TabStacks?.stackId(tab);
-      if (stackId) {
-        if (!stacks.has(stackId)) {
-          stacks.set(stackId, []);
-        }
-        stacks.get(stackId).push(tab);
+      const root = tabStacks?.topLevelTab(tab) || tab;
+      if (processedRoots.has(root)) {
+        continue;
+      }
+      processedRoots.add(root);
+
+      const stack = tabStacks?.subtree(root) || [root];
+      if (stack.length > 1) {
+        stacks.set(tabStacks.tabId(root), stack);
       } else {
-        unstackedTabs.push(tab);
+        unstackedTabs.push(root);
       }
     }
 
     const fragment = document.createDocumentFragment();
     let stackNumber = 0;
     for (const [stackId, stack] of stacks) {
-      if (stack.length < 2) {
-        unstackedTabs.push(...stack);
-        continue;
-      }
       stackNumber++;
       const collapsed = this._collapsedStacks.has(stackId);
       fragment.appendChild(

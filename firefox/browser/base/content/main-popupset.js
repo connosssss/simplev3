@@ -122,6 +122,11 @@ document.addEventListener(
         case "context_StackUnderActive":
           if (TabContextMenu.multiselected) {
             TabStacks.stackSelectedTabs(TabContextMenu.contextTabs);
+          } else if (
+            TabContextMenu.contextTab == gBrowser.selectedTab &&
+            TabStacks.isChild(TabContextMenu.contextTab)
+          ) {
+            TabStacks.openTabInStack(TabContextMenu.contextTab);
           } else {
             TabStacks.stack(TabContextMenu.contextTab, gBrowser.selectedTab);
           }
