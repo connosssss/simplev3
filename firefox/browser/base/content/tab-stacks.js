@@ -50,6 +50,19 @@ var TabStacks = {
     };
     this._onTabClose = () => this.refresh();
     this._onTabSelect = event => {
+      let lastSelectedTab = this._lastSelectedTabs.get(
+        this.tabId(event.target)
+      );
+      if (
+        !this._selectingStackRoot &&
+        lastSelectedTab &&
+        !lastSelectedTab.closing &&
+        this.parent(lastSelectedTab) == event.target
+      ) {
+        gBrowser.selectedTab = lastSelectedTab;
+        return;
+      }
+
       let child = event.target;
       let parent = this.parent(child);
       while (parent) {
@@ -696,7 +709,12 @@ var TabStacks = {
       this.SessionStore.deleteCustomTabValue(root, this.COLLAPSED_KEY);
     } else {
       if (this.isAncestor(root, gBrowser.selectedTab)) {
-        gBrowser.selectedTab = root;
+        this._selectingStackRoot = true;
+        try {
+          gBrowser.selectedTab = root;
+        } finally {
+          this._selectingStackRoot = false;
+        }
       }
       this.SessionStore.setCustomTabValue(root, this.COLLAPSED_KEY, "true");
     }

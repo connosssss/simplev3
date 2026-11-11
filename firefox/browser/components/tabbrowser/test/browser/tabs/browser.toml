@@ -658,6 +658,9 @@ skip-if = [
 ["browser_tabfocus.js"]
 tags = "vertical-tabs"
 
+["browser_tab_stacks_restore.js"]
+tags = "vertical-tabs"
+
 ["browser_tabkeynavigation.js"]
 tags = "vertical-tabs"
 
