@@ -41,10 +41,12 @@ var TabStacks = {
     this.migrateLegacyStacks();
 
     this._onTabOpen = event => {
-      let sourceTab = this._newTabParent || event.target.openerTab;
+      let forcedParent = this._newTabParent;
       this._newTabParent = null;
-      if (sourceTab) {
-        this.addToSourceStack(event.target, sourceTab);
+      if (forcedParent) {
+        this.stack(event.target, forcedParent);
+      } else if (event.target.openerTab) {
+        this.addToSourceStack(event.target, event.target.openerTab);
       }
       this.refresh();
     };
@@ -563,7 +565,10 @@ var TabStacks = {
     ) {
       return;
     }
-    this.stack(tab, sourceTab);
+    let parent = this.children(sourceTab).length
+      ? sourceTab
+      : this.parent(sourceTab);
+    this.stack(tab, parent);
   },
 
   openTabInStack(parent) {
