@@ -1045,7 +1045,7 @@ var TabStacks = {
     return button;
   },
 
-  createStackBarNewTabButton() {
+  createStackBarNewTabButton(stackRoot = null) {
     let button = document.createXULElement("toolbarbutton");
     button.className = "toolbarbutton-1 tab-stack-newtab-button";
     document.l10n.setAttributes(button, "tabs-toolbar-new-tab");
@@ -1055,7 +1055,13 @@ var TabStacks = {
       }
       event.preventDefault();
       event.stopPropagation();
-      this.openTabInActiveStack();
+      let root =
+        stackRoot ||
+        button.closest(".tab-stack-bar-row")?.stackRoot ||
+        this.activeStackTabs()[0];
+      if (root) {
+        this.openTabInStack(root);
+      }
     });
     return button;
   },
@@ -1190,7 +1196,7 @@ var TabStacks = {
         ...stack.map((tab, index) =>
           this.createStackBarTab(tab, tab == currentTab, index != 0)
         ),
-        this.createStackBarNewTabButton()
+        this.createStackBarNewTabButton(stack[0])
       );
       this._setupStackBarRowDnd(row);
       return row;
