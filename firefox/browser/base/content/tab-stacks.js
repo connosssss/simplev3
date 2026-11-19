@@ -9,6 +9,7 @@ var TabStacks = {
   PARENT_KEY: "tab-stack.parent",
   TAB_ID_KEY: "tab-stack.id",
   COLLAPSED_KEY: "tab-stack.collapsed",
+  LAST_SELECTED_KEY: "tab-stack.last-selected",
 
   get SessionStore() {
     if (this._SessionStore) {
@@ -52,17 +53,25 @@ var TabStacks = {
     };
     this._onTabClose = () => this.refresh();
     this._onTabSelect = event => {
-      let lastSelectedTab = this._lastSelectedTabs.get(
-        this.tabId(event.target)
-      );
-      if (
-        !this._selectingStackRoot &&
-        lastSelectedTab &&
-        !lastSelectedTab.closing &&
-        this.parent(lastSelectedTab) == event.target
-      ) {
-        gBrowser.selectedTab = lastSelectedTab;
-        return;
+      let root = this.isStacked(event.target)
+        ? this.topLevelTab(event.target)
+        : null;
+
+      if (root && event.target === root && !this._selectingStackRoot) {
+        let lastSelected = this.activeStackTab(root);
+        if (lastSelected && lastSelected !== root && !lastSelected.closing) {
+          gBrowser.selectedTab = lastSelected;
+          return;
+        }
+      }
+
+      if (root && !this._selectingStackRoot) {
+        this._lastSelectedTabs.set(this.tabId(root), event.target);
+        this.SessionStore.setCustomTabValue(
+          root,
+          this.LAST_SELECTED_KEY,
+          this.tabId(event.target)
+        );
       }
 
       let child = event.target;
@@ -596,8 +605,47 @@ var TabStacks = {
     return root ? [root, ...this.children(root)] : [];
   },
 
+  activeStackTab(root) {
+    if (this.isCollapsed(root)) {
+      return root;
+    }
+
+    let allTabs = this.subtree(root);
+    let selected = allTabs.find(t => t.selected);
+    if (selected) {
+      return selected;
+    }
+
+    let fromMemory = this._lastSelectedTabs.get(this.tabId(root));
+    if (fromMemory && !fromMemory.closing && allTabs.includes(fromMemory)) {
+      return fromMemory;
+    }
+
+    let savedChildId = this.SessionStore.getCustomTabValue(
+      root,
+      this.LAST_SELECTED_KEY
+    );
+    if (savedChildId) {
+      let savedTab = allTabs.find(
+        tab => this.tabId(tab) == savedChildId && !tab.closing
+      );
+      if (savedTab) {
+        this._lastSelectedTabs.set(this.tabId(root), savedTab);
+        return savedTab;
+      }
+    }
+
+    return root;
+  },
+
   currentStackTab(stack) {
     let root = stack[0];
+    let topRoot = this.topLevelTab(root);
+    let active = this.activeStackTab(topRoot);
+    if (stack.includes(active)) {
+      return active;
+    }
+
     return (
       [...stack]
         .reverse()
@@ -605,7 +653,6 @@ var TabStacks = {
           tab =>
             tab == gBrowser.selectedTab || this.isAncestor(tab, gBrowser.selectedTab)
         ) ||
-      this._lastSelectedTabs.get(this.tabId(root)) ||
       root
     );
   },
@@ -680,8 +727,23 @@ var TabStacks = {
     if (!this.isChild(tab)) {
       return;
     }
+    let root = this.topLevelTab(tab);
     this.setStack(tab, "");
     this.SessionStore.deleteCustomTabValue(tab, this.COLLAPSED_KEY);
+    this.SessionStore.deleteCustomTabValue(tab, this.LAST_SELECTED_KEY);
+    if (root) {
+      let savedId = this.SessionStore.getCustomTabValue(
+        root,
+        this.LAST_SELECTED_KEY
+      );
+      if (savedId == this.tabId(tab)) {
+        this.SessionStore.deleteCustomTabValue(
+          root,
+          this.LAST_SELECTED_KEY
+        );
+        this._lastSelectedTabs.delete(this.tabId(root));
+      }
+    }
     this.refresh();
   },
 
@@ -689,8 +751,23 @@ var TabStacks = {
     let validTabs = (tabs || []).filter(tab => tab && !tab.closing);
     for (let tab of validTabs) {
       if (this.isChild(tab)) {
+        let root = this.topLevelTab(tab);
         this.setStack(tab, "");
         this.SessionStore.deleteCustomTabValue(tab, this.COLLAPSED_KEY);
+        this.SessionStore.deleteCustomTabValue(tab, this.LAST_SELECTED_KEY);
+        if (root) {
+          let savedId = this.SessionStore.getCustomTabValue(
+            root,
+            this.LAST_SELECTED_KEY
+          );
+          if (savedId == this.tabId(tab)) {
+            this.SessionStore.deleteCustomTabValue(
+              root,
+              this.LAST_SELECTED_KEY
+            );
+            this._lastSelectedTabs.delete(this.tabId(root));
+          }
+        }
       }
     }
     if (gBrowser.clearMultiSelectedTabs) {
@@ -758,11 +835,13 @@ var TabStacks = {
   },
 
   moveStack(tab, targetTab, before = false) {
-    let movingTabs = this.subtree(tab);
+    let root = this.topLevelTab(tab);
+    let movingTabs = this.subtree(root);
     if (!targetTab || movingTabs.includes(targetTab)) {
       return;
     }
-    let targetTabs = this.subtree(targetTab);
+    let targetRoot = this.topLevelTab(targetTab);
+    let targetTabs = this.subtree(targetRoot);
 
     if (before) {
       gBrowser.moveTabsBefore(movingTabs, targetTabs[0]);
@@ -920,7 +999,12 @@ var TabStacks = {
     button.addEventListener("command", event => {
       event.stopPropagation();
       if (!button._closeRequested && !tab.closing) {
-        gBrowser.selectedTab = tab;
+        this._selectingStackRoot = true;
+        try {
+          gBrowser.selectedTab = tab;
+        } finally {
+          this._selectingStackRoot = false;
+        }
       }
     });
 
@@ -1205,6 +1289,9 @@ var TabStacks = {
   },
 
   refresh() {
+    let isHorizontal =
+      gBrowser.tabContainer.getAttribute("orient") == "horizontal";
+
     for (let tab of this.tabs()) {
       tab.toggleAttribute("stack-child", false);
       tab.toggleAttribute("stack-hidden", false);
@@ -1214,6 +1301,27 @@ var TabStacks = {
       delete tab.dataset.stackTabCount;
       let existingBadge = tab.querySelector(".tab-stack-count");
       if (existingBadge) existingBadge.remove();
+
+      let root = this.isStacked(tab) ? this.topLevelTab(tab) : null;
+      if (root && isHorizontal) {
+        let active = this.activeStackTab(root);
+        let isRep = tab === active;
+        let tabCount = this.subtree(root).length;
+        tab.toggleAttribute("stack-child", !isRep);
+        tab.toggleAttribute("stack-current", isRep);
+        tab.toggleAttribute("stack-collapsed", isRep && this.isCollapsed(root));
+        if (isRep) {
+          tab.dataset.stackTabCount = tabCount;
+          let closeBtn = tab.querySelector(".tab-close-button");
+          if (closeBtn) {
+            let badge = document.createElement("span");
+            badge.className = "tab-stack-count";
+            badge.textContent = tabCount;
+            closeBtn.parentNode.insertBefore(badge, closeBtn);
+          }
+        }
+        continue;
+      }
 
       let parent = this.parent(tab);
       let depth = 0;
