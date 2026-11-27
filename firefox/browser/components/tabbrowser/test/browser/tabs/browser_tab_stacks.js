@@ -33,6 +33,50 @@ add_task(async function test_tab_stacks() {
     !parent.hasAttribute("stack-collapsed"),
     "selecting a stack member expands its stack"
   );
+  Assert.deepEqual(
+    TabStacks.stackRows(),
+    [
+      [parent, child],
+      [child, grandchild],
+    ],
+    "Nested stacks keep separate expandable rows"
+  );
+  let stackRows = document.querySelectorAll(".tab-stack-bar-row");
+  let outerTabs = stackRows[0].querySelectorAll(".tab-stack-tab");
+  let innerTabs = stackRows[1].querySelectorAll(".tab-stack-tab");
+  Assert.equal(
+    outerTabs[1].getAttribute("label"),
+    "Stack 2",
+    "A nested stack is a folder in its parent's row"
+  );
+  Assert.ok(
+    !outerTabs[1].hasAttribute("stack-current"),
+    "A nested stack folder is never an active tab"
+  );
+  Assert.ok(
+    !outerTabs[1].hasAttribute("selected"),
+    "A nested stack folder does not mirror its member's selection"
+  );
+  Assert.equal(
+    innerTabs[0].getAttribute("label"),
+    child.label,
+    "A nested stack's own row shows its real page title"
+  );
+  Assert.equal(
+    parent.querySelector(".tab-icon-image").hidden,
+    true,
+    "The outer stack folder has no icon"
+  );
+  Assert.equal(
+    outerTabs[1].querySelector(".tab-icon-image").hidden,
+    true,
+    "A nested stack folder has no icon"
+  );
+  Assert.equal(
+    innerTabs[0].querySelector(".tab-icon-image").hidden,
+    false,
+    "A stack member keeps its page icon in its own row"
+  );
 
   gBrowser.selectedTab = parent;
   BrowserTestUtils.removeTab(parent);
@@ -59,6 +103,7 @@ add_task(async function test_active_stack_gets_a_stack_bar() {
   let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
     skipAnimation: true,
   });
+  let parentLabel = parent.label;
   let child = BrowserTestUtils.addTab(gBrowser, "about:config", {
     skipAnimation: true,
   });
@@ -82,6 +127,24 @@ add_task(async function test_active_stack_gets_a_stack_bar() {
     "none",
     "Stack children are not shown in the outer tab bar"
   );
+  Assert.equal(
+    parent.querySelector(".tab-label").textContent,
+    "Stack 1",
+    "The outer tab bar shows the stack folder name"
+  );
+  Assert.equal(
+    parent.label,
+    parentLabel,
+    "The stack folder name does not replace the tab's real label"
+  );
+  Assert.ok(
+    !container.querySelector(".tab-stack-tab").hasAttribute("stack-current"),
+    "Expanded stack tabs do not render as nested stack folders"
+  );
+  Assert.ok(
+    !parent.hasAttribute("stack-current"),
+    "The outer stack folder is never an active tab"
+  );
   Assert.deepEqual(
     Array.from(
       container.querySelectorAll(".tab-stack-tab"),
@@ -91,12 +154,22 @@ add_task(async function test_active_stack_gets_a_stack_bar() {
     "The stack bar preserves the stack's tab order"
   );
 
+  TabStacks.moveInStack(parent, child, false, parent);
+  Assert.deepEqual(
+    Array.from(
+      container.querySelectorAll(".tab-stack-tab"),
+      button => button.tab
+    ),
+    [child, parent],
+    "The stack's original root can be reordered like every other member"
+  );
+
   let selectChild = BrowserTestUtils.waitForEvent(
     gBrowser.tabContainer,
     "TabSelect"
   );
   EventUtils.synthesizeMouseAtCenter(
-    container.querySelectorAll(".tab-stack-tab")[1],
+    container.querySelectorAll(".tab-stack-tab")[0],
     {},
     window
   );
@@ -238,14 +311,14 @@ add_task(async function test_stack_remembers_its_last_selected_tab() {
 
   gBrowser.selectedTab = secondParent;
   Assert.ok(
-    firstChild.hasAttribute("stack-current"),
-    "Switching stacks keeps the last selected tab as the first stack's parent"
+    !firstParent.hasAttribute("stack-current"),
+    "Switching stacks does not make the first stack folder active"
   );
 
   gBrowser.selectedTab = regularTab;
   Assert.ok(
-    firstChild.hasAttribute("stack-current"),
-    "Switching to a regular tab keeps the last selected stack tab as parent"
+    !firstParent.hasAttribute("stack-current"),
+    "Switching to a regular tab does not make the stack folder active"
   );
 
   gBrowser.selectedTab = firstChild;

@@ -58,7 +58,7 @@ var TabStacks = {
         : null;
 
       if (root && event.target === root && !this._selectingStackRoot) {
-        let lastSelected = this.activeStackTab(root);
+        let lastSelected = this.lastSelectedStackTab(root);
         if (lastSelected && lastSelected !== root && !lastSelected.closing) {
           gBrowser.selectedTab = lastSelected;
           return;
@@ -66,18 +66,18 @@ var TabStacks = {
       }
 
       if (root && !this._selectingStackRoot) {
-        this._lastSelectedTabs.set(this.tabId(root), event.target);
-        this.SessionStore.setCustomTabValue(
-          root,
-          this.LAST_SELECTED_KEY,
-          this.tabId(event.target)
-        );
+        this.rememberStackTab(root, event.target);
+      }
+      if (this.isParent(event.target)) {
+        this.rememberStackTab(event.target, event.target);
       }
 
       let child = event.target;
       let parent = this.parent(child);
       while (parent) {
-        this._lastSelectedTabs.set(this.tabId(parent), child);
+        if (parent != root) {
+          this.rememberStackTab(parent, child);
+        }
         child = parent;
         parent = this.parent(child);
       }
@@ -605,17 +605,17 @@ var TabStacks = {
     return root ? [root, ...this.children(root)] : [];
   },
 
-  activeStackTab(root) {
-    if (this.isCollapsed(root)) {
-      return root;
-    }
+  rememberStackTab(root, tab) {
+    this._lastSelectedTabs.set(this.tabId(root), tab);
+    this.SessionStore.setCustomTabValue(
+      root,
+      this.LAST_SELECTED_KEY,
+      this.tabId(tab)
+    );
+  },
 
+  lastSelectedStackTab(root) {
     let allTabs = this.subtree(root);
-    let selected = allTabs.find(t => t.selected);
-    if (selected) {
-      return selected;
-    }
-
     let fromMemory = this._lastSelectedTabs.get(this.tabId(root));
     if (fromMemory && !fromMemory.closing && allTabs.includes(fromMemory)) {
       return fromMemory;
@@ -635,7 +635,30 @@ var TabStacks = {
       }
     }
 
-    return root;
+    return null;
+  },
+
+  stackBarTabs(root) {
+    let tabOrder = new Map(
+      this.tabs().map((tab, index) => [tab, index])
+    );
+    return [root, ...this.children(root)].sort(
+      (a, b) => tabOrder.get(a) - tabOrder.get(b)
+    );
+  },
+
+  activeStackTab(root) {
+    if (this.isCollapsed(root)) {
+      return root;
+    }
+
+    let allTabs = this.subtree(root);
+    let selected = allTabs.find(t => t.selected);
+    if (selected) {
+      return selected;
+    }
+
+    return this.lastSelectedStackTab(root) || root;
   },
 
   currentStackTab(stack) {
@@ -817,15 +840,20 @@ var TabStacks = {
    * @param {MozTabbrowserTab} targetTab - The tab to position relative to.
    * @param {boolean} before - If true, place before targetTab; otherwise after.
    */
-  moveInStack(tab, targetTab, before = false) {
+  moveInStack(tab, targetTab, before = false, root = null) {
     if (!tab || !targetTab || tab === targetTab) {
       return;
     }
-    if (!this.parent(tab) || this.parent(tab) != this.parent(targetTab)) {
+    root ||= this.parent(tab);
+    if (
+      !root ||
+      (tab != root && this.parent(tab) != root) ||
+      (targetTab != root && this.parent(targetTab) != root)
+    ) {
       return;
     }
-    let movingTabs = this.subtree(tab);
-    let targetTabs = this.subtree(targetTab);
+    let movingTabs = tab == root ? [tab] : this.subtree(tab);
+    let targetTabs = targetTab == root ? [targetTab] : this.subtree(targetTab);
     if (before) {
       gBrowser.moveTabsBefore(movingTabs, targetTabs[0]);
     } else {
@@ -947,35 +975,58 @@ var TabStacks = {
     }
   },
 
-  createStackBarTab(tab, selected = tab.selected, showStackUI = true) {
+  stackName(tab, stackFolders = null) {
+    stackFolders ||= this.tabs().filter(candidate => this.isParent(candidate));
+    return `Stack ${stackFolders.indexOf(tab) + 1}`;
+  },
+
+  createStackBarTab(tab, selected = tab.selected, folderName = null) {
+    let label = folderName || tab.label;
+    let isSelected = selected && !folderName;
     let button = document.createXULElement("toolbarbutton");
     button.className = "toolbarbutton-1 tabbrowser-tab tab-stack-tab";
     button.setAttribute("context", "tabContextMenu");
     button.setAttribute("role", "tab");
-    button.setAttribute("label", tab.label);
-    button.setAttribute("tooltiptext", tab.label);
+    button.setAttribute("label", label);
+    button.setAttribute("tooltiptext", label);
     button.setAttribute("fadein", "");
-    button.setAttribute("aria-selected", selected);
-    button.toggleAttribute("selected", selected);
+    button.setAttribute("aria-selected", isSelected);
+    button.toggleAttribute("selected", isSelected);
     button.toggleAttribute(
       "visuallyselected",
-      tab.hasAttribute("visuallyselected")
+      isSelected && tab.hasAttribute("visuallyselected")
     );
-    button.toggleAttribute(
-      "stack-current",
-      showStackUI && tab.hasAttribute("stack-current")
-    );
-    button.toggleAttribute(
-      "stack-collapsed",
-      showStackUI && tab.hasAttribute("stack-collapsed")
-    );
-    button.toggleAttribute("stack-child", tab.hasAttribute("stack-child"));
     button.tab = tab;
     button.setAttribute("draggable", "true");
 
     let tabStack = tab.querySelector(".tab-stack").cloneNode(true);
-    if (!showStackUI) {
-      tabStack.querySelector(".tab-stack-count")?.remove();
+    tabStack.querySelector(".tab-stack-count")?.remove();
+    if (folderName) {
+      tabStack.querySelector(".tab-background")?.removeAttribute("selected");
+      tabStack.querySelector(".tab-content")?.removeAttribute("selected");
+    }
+    let tabLabel = tabStack.querySelector(".tab-label");
+    if (tabLabel) {
+      tabLabel.textContent = label;
+    }
+    let tabIcon = tabStack.querySelector(".tab-icon-image");
+    if (tabIcon) {
+      let image = tab.getAttribute("image") || tab.image;
+      if (image) {
+        tabIcon.setAttribute("src", image);
+      } else {
+        tabIcon.removeAttribute("src");
+      }
+      tabIcon.hidden = !!folderName;
+    }
+    if (folderName) {
+      let closeBtn = tabStack.querySelector(".tab-close-button");
+      if (closeBtn) {
+        let badge = document.createElement("span");
+        badge.className = "tab-stack-count";
+        badge.textContent = this.subtree(tab).length;
+        closeBtn.parentNode.insertBefore(badge, closeBtn);
+      }
     }
     button.append(tabStack);
     button.addEventListener("contextmenu", () => {
@@ -1090,12 +1141,15 @@ var TabStacks = {
         return;
       }
 
-      if (this.parent(draggedTab) == root && tab != root) {
-        this.moveInStack(draggedTab, tab, dropBefore);
+      if (
+        (draggedTab == root || this.parent(draggedTab) == root) &&
+        (tab == root || this.parent(tab) == root)
+      ) {
+        this.moveInStack(draggedTab, tab, dropBefore, root);
       } else {
         this.stack(draggedTab, root);
-        if (this.parent(draggedTab) == root && tab != root) {
-          this.moveInStack(draggedTab, tab, dropBefore);
+        if (this.parent(draggedTab) == root) {
+          this.moveInStack(draggedTab, tab, dropBefore, root);
         }
       }
 
@@ -1219,9 +1273,9 @@ var TabStacks = {
 
       let lastTab = this.children(root).at(-1);
 
-      if (this.parent(draggedTab) == root) {
+      if (draggedTab == root || this.parent(draggedTab) == root) {
         if (lastTab && draggedTab !== lastTab) {
-          this.moveInStack(draggedTab, lastTab, false);
+          this.moveInStack(draggedTab, lastTab, false, root);
         }
       } else {
         this.stack(draggedTab, root);
@@ -1270,15 +1324,23 @@ var TabStacks = {
       return;
     }
 
+    let stackFolders = this.tabs().filter(tab => this.isParent(tab));
     let rows = stacks.map(stack => {
       let row = document.createXULElement("hbox");
       row.className = "tab-stack-bar-row";
       row.setAttribute("role", "tablist");
       row.stackRoot = stack[0];
       let currentTab = this.currentStackTab(stack);
+      let rowTabs = this.stackBarTabs(stack[0]);
       row.append(
-        ...stack.map((tab, index) =>
-          this.createStackBarTab(tab, tab == currentTab, index != 0)
+        ...rowTabs.map(tab =>
+          this.createStackBarTab(
+            tab,
+            tab == currentTab,
+            tab != stack[0] && this.isParent(tab)
+              ? this.stackName(tab, stackFolders)
+              : null
+          )
         ),
         this.createStackBarNewTabButton(stack[0])
       );
@@ -1291,26 +1353,65 @@ var TabStacks = {
   refresh() {
     let isHorizontal =
       gBrowser.tabContainer.getAttribute("orient") == "horizontal";
+    let stackFolders = isHorizontal
+      ? this.tabs().filter(tab => this.isParent(tab))
+      : [];
 
     for (let tab of this.tabs()) {
       tab.toggleAttribute("stack-child", false);
       tab.toggleAttribute("stack-hidden", false);
       tab.toggleAttribute("stack-current", false);
       tab.toggleAttribute("stack-collapsed", false);
+      tab.style.removeProperty("--tab-background-color-selected");
+      tab.style.removeProperty("--tab-border-color-selected");
+      tab.style.removeProperty("--tab-text-color-selected");
+      tab.style.removeProperty("--tab-box-shadow-selected");
       tab.style.setProperty("--stack-depth", 0);
       delete tab.dataset.stackTabCount;
       let existingBadge = tab.querySelector(".tab-stack-count");
       if (existingBadge) existingBadge.remove();
+      let tabLabel = tab.querySelector(".tab-label");
+      if (tabLabel) {
+        tabLabel.textContent = tab.label;
+      }
+      let tabIcon = tab.querySelector(".tab-icon-image");
+
+      if (tabIcon) {
+        let image = tab.getAttribute("image") || tab.image;
+        if (image) {
+          tabIcon.setAttribute("src", image);
+        } 
+        else {
+          tabIcon.removeAttribute("src");
+        }
+        tabIcon.hidden = false;
+      }
 
       let root = this.isStacked(tab) ? this.topLevelTab(tab) : null;
       if (root && isHorizontal) {
-        let active = this.activeStackTab(root);
-        let isRep = tab === active;
+        let isRep = tab === root;
         let tabCount = this.subtree(root).length;
         tab.toggleAttribute("stack-child", !isRep);
-        tab.toggleAttribute("stack-current", isRep);
-        tab.toggleAttribute("stack-collapsed", isRep && this.isCollapsed(root));
         if (isRep) {
+          tab.style.setProperty(
+            "--tab-background-color-selected",
+            "var(--tab-background-color)"
+          );
+          tab.style.setProperty(
+            "--tab-border-color-selected",
+            "var(--tab-border-color)"
+          );
+          tab.style.setProperty(
+            "--tab-text-color-selected",
+            "var(--tab-text-color)"
+          );
+          tab.style.setProperty("--tab-box-shadow-selected", "none");
+          if (tabLabel) {
+            tabLabel.textContent = this.stackName(root, stackFolders);
+          }
+          if (tabIcon) {
+            tabIcon.hidden = true;
+          }
           tab.dataset.stackTabCount = tabCount;
           let closeBtn = tab.querySelector(".tab-close-button");
           if (closeBtn) {
