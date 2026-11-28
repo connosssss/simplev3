@@ -179,6 +179,11 @@ add_task(async function test_active_stack_gets_a_stack_bar() {
     child,
     "A stack-bar tab selects its real tab"
   );
+  Assert.equal(
+    TabStacks.lastSelectedStackTab(parent),
+    child,
+    "A stack-bar tab becomes the tab restored when returning to its stack"
+  );
 
   TabStacks.toggle(parent);
   await TestUtils.waitForCondition(

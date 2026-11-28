@@ -496,9 +496,6 @@ var TabStacks = {
       return null;
     }
     let parent = this.tabs().find(candidate => this.tabId(candidate) == parentId);
-    if (!parent) {
-      this.setStack(tab, "");
-    }
     return parent || null;
   },
 
@@ -1050,11 +1047,15 @@ var TabStacks = {
     button.addEventListener("command", event => {
       event.stopPropagation();
       if (!button._closeRequested && !tab.closing) {
-        this._selectingStackRoot = true;
-        try {
+        if (tab == this.topLevelTab(tab)) {
+          this._selectingStackRoot = true;
+          try {
+            gBrowser.selectedTab = tab;
+          } finally {
+            this._selectingStackRoot = false;
+          }
+        } else {
           gBrowser.selectedTab = tab;
-        } finally {
-          this._selectingStackRoot = false;
         }
       }
     });

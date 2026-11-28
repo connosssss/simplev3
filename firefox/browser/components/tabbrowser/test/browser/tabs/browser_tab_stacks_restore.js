@@ -38,3 +38,31 @@ add_task(async function test_stack_restores_active_tab() {
   TabStacks.toggle(root);
   is(gBrowser.selectedTab, root, "Collapsing a stack still selects its root");
 });
+
+add_task(async function test_stack_parent_waits_for_restore() {
+  let root = BrowserTestUtils.addTab(gBrowser, "data:,stack-root");
+  let child = BrowserTestUtils.addTab(gBrowser, "data:,stack-child");
+
+  registerCleanupFunction(async () => {
+    for (let tab of [child, root]) {
+      if (!tab.closing && tab.isConnected) {
+        await BrowserTestUtils.removeTab(tab);
+      }
+    }
+  });
+
+  TabStacks.stack(child, root);
+  let rootId = TabStacks.tabId(root);
+  let originalTabs = TabStacks.tabs;
+  TabStacks.tabs = () => [child];
+  try {
+    is(TabStacks.parent(child), null, "Parent is unavailable during restore");
+    is(
+      TabStacks.stackId(child),
+      rootId,
+      "The child keeps its parent ID until the parent is restored"
+    );
+  } finally {
+    TabStacks.tabs = originalTabs;
+  }
+});
